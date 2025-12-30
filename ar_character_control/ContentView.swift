@@ -9,20 +9,16 @@ import SwiftUI
 import RealityKit
 
 struct ContentView : View {
-
     var body: some View {
         RealityView { content in
 
-            // Create a cube model
-            let model = Entity()
-            let mesh = MeshResource.generateBox(size: 0.1, cornerRadius: 0.005)
-            let material = SimpleMaterial(color: .gray, roughness: 0.15, isMetallic: true)
-            model.components.set(ModelComponent(mesh: mesh, materials: [material]))
-            model.position = [0, 0.05, 0]
+            let character = PodCharacter.make()
+            // Place character so feet rest on the plane (y ~ 0)
+            character.position = [0.0, 0.0, 0.0]
 
             // Create horizontal plane anchor for the content
             let anchor = AnchorEntity(.plane(.horizontal, classification: .any, minimumBounds: SIMD2<Float>(0.2, 0.2)))
-            anchor.addChild(model)
+            anchor.addChild(character)
 
             // Add the horizontal plane anchor to the scene
             content.add(anchor)
@@ -38,3 +34,4 @@ struct ContentView : View {
 #Preview {
     ContentView()
 }
+

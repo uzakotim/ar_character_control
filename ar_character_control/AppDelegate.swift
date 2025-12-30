@@ -5,7 +5,6 @@
 //  Created by Timur Uzakov on 30/12/25.
 //
 
-import UIKit
 import SwiftUI
 
 @main
