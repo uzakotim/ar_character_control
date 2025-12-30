@@ -8,18 +8,89 @@
 import SwiftUI
 import RealityKit
 import ARKit
+import Combine
+
+final class ControlsProxy: ObservableObject {
+    weak var coordinator: ARViewContainer.Coordinator?
+
+    func up() { coordinator?.moveForward() }
+    func down() { coordinator?.moveBackward() }
+    func left() { coordinator?.moveLeft() }
+    func right() { coordinator?.moveRight() }
+    func jump() { coordinator?.jump() }
+}
 
 struct ContentView : View {
+    @StateObject private var controls = ControlsProxy()
+
     var body: some View {
-        ARViewContainer()
-            .edgesIgnoringSafeArea(.all)
+        ZStack {
+            ARViewContainer(controls: controls)
+                .edgesIgnoringSafeArea(.all)
+
+            // Overlay controls
+            VStack {
+                Spacer()
+                HStack {
+                    // Bottom-left D-pad
+                    VStack(spacing: 8) {
+                        HStack { Spacer() }
+                        Button(action: { controls.up() }) {
+                            Image(systemName: "arrow.up.circle.fill")
+                                .font(.system(size: 44))
+                                .foregroundStyle(.white)
+                                .shadow(radius: 2)
+                        }
+                        HStack(spacing: 16) {
+                            Button(action: { controls.left() }) {
+                                Image(systemName: "arrow.left.circle.fill")
+                                    .font(.system(size: 44))
+                                    .foregroundStyle(.white)
+                                    .shadow(radius: 2)
+                            }
+                            Button(action: { controls.down() }) {
+                                Image(systemName: "arrow.down.circle.fill")
+                                    .font(.system(size: 44))
+                                    .foregroundStyle(.white)
+                                    .shadow(radius: 2)
+                            }
+                            Button(action: { controls.right() }) {
+                                Image(systemName: "arrow.right.circle.fill")
+                                    .font(.system(size: 44))
+                                    .foregroundStyle(.white)
+                                    .shadow(radius: 2)
+                            }
+                        }
+                    }
+                    .padding(.leading, -500)
+                    .padding(.bottom, 24)
+                    Spacer()
+                    Spacer()
+
+                    // Bottom-right Jump button
+                    Button(action: { controls.jump() }) {
+                        Text("Jump")
+                            .font(.headline)
+                            .padding(.horizontal, 20)
+                            .padding(.vertical, 12)
+                            .background(.ultraThinMaterial, in: Capsule())
+                            .foregroundStyle(.white)
+                            .shadow(radius: 2)
+                    }
+                    .padding(.trailing, 20)
+                    .padding(.bottom, 24)
+                }
+            }
+        }
     }
 }
 
 struct ARViewContainer: UIViewRepresentable {
+    let controls: ControlsProxy
 
     func makeCoordinator() -> Coordinator {
-        Coordinator()
+        let c = Coordinator()
+        return c
     }
 
     func makeUIView(context: Context) -> ARView {
@@ -37,6 +108,7 @@ struct ARViewContainer: UIViewRepresentable {
 
         // Wire up coordinator
         context.coordinator.arView = arView
+        controls.coordinator = context.coordinator
 
         // Add tap gesture recognizer to place the pod on a detected plane
         let tapGesture = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTap(_:)))
@@ -52,6 +124,7 @@ struct ARViewContainer: UIViewRepresentable {
     class Coordinator: NSObject {
         weak var arView: ARView?
         var podAnchor: AnchorEntity?
+        var character: Entity?
 
         @objc
         func handleTap(_ sender: UITapGestureRecognizer) {
@@ -64,15 +137,74 @@ struct ARViewContainer: UIViewRepresentable {
             guard let firstResult = results.first else { return }
 
             // Create an anchor at the raycast result and place the pod character there
+
             let anchor = AnchorEntity(raycastResult: firstResult)
 
-            let character = PodCharacter.make()
+
             // Place character so feet rest on the plane (y ~ 0)
+            let character = PodCharacter.make()
             character.position = [0.0, 0.0, 0.0]
 
             anchor.addChild(character)
+            self.character = character
             arView.scene.addAnchor(anchor)
             self.podAnchor = anchor
+        }
+
+
+        // MARK: - Controls
+
+        func moveLocal(by offset: SIMD3<Float>, duration: TimeInterval = 0.18) {
+            guard let character = character else { return }
+            var t = character.transform
+            // Convert local-space offset to world-space using current rotation
+            let worldOffset = t.rotation.act(offset)
+            t.translation += worldOffset
+            character.move(to: t, relativeTo: character.parent, duration: duration)
+        }
+
+        func moveForward() {
+            let distance: Float = 0.12
+            moveLocal(by: [0, 0, -distance], duration: 0.18)
+        }
+
+        func moveBackward() {
+            let distance: Float = 0.12
+            moveLocal(by: [0, 0, distance], duration: 0.18)
+        }
+
+        func moveLeft() {
+            let distance: Float = 0.12
+            moveLocal(by: [-distance,0,0], duration: 0.18)
+        }
+        func moveRight() {
+            let distance: Float = 0.12
+            moveLocal(by: [distance,0,0], duration: 0.18)
+        }
+        
+        func jump() {
+            guard let character = character else { return }
+            let up: Float = 0.18
+            var upTransform = character.transform
+            upTransform.translation.y += up
+            character.move(to: upTransform, relativeTo: character.parent, duration: 0.15)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) {
+                var downTransform = character.transform
+                downTransform.translation.y -= up
+                character.move(to: downTransform, relativeTo: character.parent, duration: 0.18)
+            }
+        }
+
+        func turnLeft() {
+            guard let character = character else { return }
+            let angle = Float.pi / 8
+            character.transform.rotation *= simd_quatf(angle: angle, axis: [0, 1, 0])
+        }
+
+        func turnRight() {
+            guard let character = character else { return }
+            let angle = -Float.pi / 8
+            character.transform.rotation *= simd_quatf(angle: angle, axis: [0, 1, 0])
         }
     }
 }
