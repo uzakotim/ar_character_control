@@ -145,6 +145,13 @@ struct ARViewContainer: UIViewRepresentable {
     
 
     class Coordinator: NSObject {
+        enum ControlState {
+            case idle
+            case moving
+            case jumping
+        }
+
+        var controlState: ControlState = .idle
         weak var arView: ARView?
         var podAnchor: AnchorEntity?
         var character: Entity?
@@ -164,14 +171,11 @@ struct ARViewContainer: UIViewRepresentable {
             }
         }
         func updateMovement(deltaTime: Float) {
+            guard controlState == .moving else { return }
             guard let character = character else { return }
-            guard simd_length(moveDirection) > 0 else { return }
 
             var transform = character.transform
-
-            // Convert local → world using current rotation
             let worldDir = transform.rotation.act(moveDirection)
-
             transform.translation += worldDir * moveSpeed * deltaTime
             character.transform = transform
         }
@@ -241,6 +245,7 @@ struct ARViewContainer: UIViewRepresentable {
         
         private var movementTimer: Timer?
         func startMoving(_ action: @escaping () -> Void) {
+            if isJumping { return }
             stopMoving()
             movementTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { _ in
                 action()
@@ -248,15 +253,34 @@ struct ARViewContainer: UIViewRepresentable {
         }
 
         func stopMoving() {
-            movementTimer?.invalidate()
-            movementTimer = nil
             moveDirection = .zero
+            if controlState == .moving {
+                controlState = .idle
+            }
         }
-        func startMoveForward()  { moveDirection = [0, 0, 1] }
-        func startMoveBackward() { moveDirection = [0, 0,  -1] }
-        func startMoveLeft()     { moveDirection = [1, 0, 0] }
-        func startMoveRight()    { moveDirection = [-1, 0, 0] }
-        
+        func startMoveForward() {
+            guard controlState != .jumping else { return }
+            controlState = .moving
+            moveDirection = [0, 0, 1]
+        }
+
+        func startMoveBackward() {
+            guard controlState != .jumping else { return }
+            controlState = .moving
+            moveDirection = [0, 0, -1]
+        }
+
+        func startMoveLeft() {
+            guard controlState != .jumping else { return }
+            controlState = .moving
+            moveDirection = [1, 0, 0]
+        }
+
+        func startMoveRight() {
+            guard controlState != .jumping else { return }
+            controlState = .moving
+            moveDirection = [-1, 0, 0]
+        }
         
         func moveLocal(by offset: SIMD3<Float>, duration: TimeInterval = 0.18) {
             guard let character = character else { return }
@@ -285,8 +309,12 @@ struct ARViewContainer: UIViewRepresentable {
         
         func jump() {
             guard let character = character else { return }
+            guard controlState != .jumping else { return }
 
-            isJumping = true   // ⛔ pause camera sync
+            // ⛔ stop movement immediately
+            moveDirection = .zero
+            controlState = .jumping
+            isJumping = true
 
             let up: Float = 0.18
 
@@ -299,9 +327,9 @@ struct ARViewContainer: UIViewRepresentable {
                 downTransform.translation.y -= up
                 character.move(to: downTransform, relativeTo: character.parent, duration: 0.18)
 
-                // ✅ resume camera sync after landing
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
                     self.isJumping = false
+                    self.controlState = .idle   // ✅ unlock controls
                 }
             }
         }
