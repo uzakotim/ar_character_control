@@ -125,6 +125,7 @@ struct ARViewContainer: UIViewRepresentable {
         weak var arView: ARView?
         var podAnchor: AnchorEntity?
         var character: Entity?
+        var isJumping = false
 
         @objc
         func handleTap(_ sender: UITapGestureRecognizer) {
@@ -183,17 +184,26 @@ struct ARViewContainer: UIViewRepresentable {
         }
         
         func jump() {
-            guard let character = character else { return }
-            let up: Float = 0.18
-            var upTransform = character.transform
-            upTransform.translation.y += up
-            character.move(to: upTransform, relativeTo: character.parent, duration: 0.15)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) {
-                var downTransform = character.transform
-                downTransform.translation.y -= up
-                character.move(to: downTransform, relativeTo: character.parent, duration: 0.18)
+            guard let character = character, !isJumping else { return }
+            isJumping = true
+
+            let jumpHeight: Float = 0.18
+            let groundY = character.transform.translation.y
+
+            var up = character.transform
+            up.translation.y = groundY + jumpHeight
+
+            character.move(to: up, relativeTo: character.parent, duration: 0.15)
+
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.33) {
+                guard let character = self.character else { return }
+                var down = character.transform
+                down.translation.y = groundY
+                character.move(to: down, relativeTo: character.parent, duration: 0.18)
+                self.isJumping = false
             }
         }
+
 
         func turnLeft() {
             guard let character = character else { return }
