@@ -13,11 +13,32 @@ import Combine
 final class ControlsProxy: ObservableObject {
     weak var coordinator: ARViewContainer.Coordinator?
 
-    func up() { coordinator?.moveForward() }
-    func down() { coordinator?.moveBackward() }
-    func left() { coordinator?.moveLeft() }
-    func right() { coordinator?.moveRight() }
-    func jump() { coordinator?.jump() }
+    func startUp()    { coordinator?.startMoving { self.coordinator?.moveForward() } }
+    func startDown()  { coordinator?.startMoving { self.coordinator?.moveBackward() } }
+    func startLeft()  { coordinator?.startMoving { self.coordinator?.moveLeft() } }
+    func startRight() { coordinator?.startMoving { self.coordinator?.moveRight() } }
+
+    func stop()       { coordinator?.stopMoving() }
+
+    func jump()       { coordinator?.jump() }
+}
+
+struct HoldButton: View {
+    let systemName: String
+    let onPress: () -> Void
+    let onRelease: () -> Void
+
+    var body: some View {
+        Image(systemName: systemName)
+            .font(.system(size: 44))
+            .foregroundStyle(.white)
+            .shadow(radius: 2)
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in onPress() }
+                    .onEnded { _ in onRelease() }
+            )
+    }
 }
 
 struct ContentView : View {
@@ -35,31 +56,30 @@ struct ContentView : View {
                     // Bottom-left D-pad
                     VStack(spacing: 8) {
                         HStack { Spacer() }
-                        Button(action: { controls.up() }) {
-                            Image(systemName: "arrow.up.circle.fill")
-                                .font(.system(size: 44))
-                                .foregroundStyle(.white)
-                                .shadow(radius: 2)
-                        }
+                        HoldButton(
+                            systemName: "arrow.up.circle.fill",
+                            onPress: { controls.startUp() },
+                            onRelease: { controls.stop() }
+                        )
+
                         HStack(spacing: 16) {
-                            Button(action: { controls.left() }) {
-                                Image(systemName: "arrow.left.circle.fill")
-                                    .font(.system(size: 44))
-                                    .foregroundStyle(.white)
-                                    .shadow(radius: 2)
-                            }
-                            Button(action: { controls.down() }) {
-                                Image(systemName: "arrow.down.circle.fill")
-                                    .font(.system(size: 44))
-                                    .foregroundStyle(.white)
-                                    .shadow(radius: 2)
-                            }
-                            Button(action: { controls.right() }) {
-                                Image(systemName: "arrow.right.circle.fill")
-                                    .font(.system(size: 44))
-                                    .foregroundStyle(.white)
-                                    .shadow(radius: 2)
-                            }
+                            HoldButton(
+                                systemName: "arrow.left.circle.fill",
+                                onPress: { controls.startLeft() },
+                                onRelease: { controls.stop() }
+                            )
+
+                            HoldButton(
+                                systemName: "arrow.down.circle.fill",
+                                onPress: { controls.startDown() },
+                                onRelease: { controls.stop() }
+                            )
+
+                            HoldButton(
+                                systemName: "arrow.right.circle.fill",
+                                onPress: { controls.startRight() },
+                                onRelease: { controls.stop() }
+                            )
                         }
                     }
                     .padding(.leading, -500)
@@ -189,7 +209,24 @@ struct ARViewContainer: UIViewRepresentable {
 
 
         // MARK: - Controls
+        // MARK: - Movement tuning
+        let baseStep: Float = 0.12 * 0.5   // ⬅️ half step
+        let moveDuration: TimeInterval = 0.12
+        
+        private var movementTimer: Timer?
+        func startMoving(_ action: @escaping () -> Void) {
+            stopMoving()
+            movementTimer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { _ in
+                action()
+            }
+        }
 
+        func stopMoving() {
+            movementTimer?.invalidate()
+            movementTimer = nil
+        }
+        
+        
         func moveLocal(by offset: SIMD3<Float>, duration: TimeInterval = 0.18) {
             guard let character = character else { return }
             var t = character.transform
@@ -200,22 +237,19 @@ struct ARViewContainer: UIViewRepresentable {
         }
 
         func moveForward() {
-            let distance: Float = 0.12
-            moveLocal(by: [0, 0, -distance], duration: 0.18)
+            moveLocal(by: [0, 0, -baseStep], duration: moveDuration)
         }
 
         func moveBackward() {
-            let distance: Float = 0.12
-            moveLocal(by: [0, 0, distance], duration: 0.18)
+            moveLocal(by: [0, 0, baseStep], duration: moveDuration)
         }
 
         func moveLeft() {
-            let distance: Float = 0.12
-            moveLocal(by: [-distance,0,0], duration: 0.18)
+            moveLocal(by: [-baseStep, 0, 0], duration: moveDuration)
         }
+
         func moveRight() {
-            let distance: Float = 0.12
-            moveLocal(by: [distance,0,0], duration: 0.18)
+            moveLocal(by: [baseStep, 0, 0], duration: moveDuration)
         }
         
         func jump() {
