@@ -120,13 +120,47 @@ struct ARViewContainer: UIViewRepresentable {
     func updateUIView(_ uiView: ARView, context: Context) {
         // Nothing to update per-frame from SwiftUI state for now
     }
+    
+    
+    
 
     class Coordinator: NSObject {
         weak var arView: ARView?
         var podAnchor: AnchorEntity?
         var character: Entity?
         var isJumping = false
+        var cameraUpdateCancellable: Cancellable?
+        
+        func startCameraSync() {
+            guard let arView = arView else { return }
 
+            cameraUpdateCancellable = arView.scene.subscribe(
+                to: SceneEvents.Update.self
+            ) { [weak self] _ in
+                self?.syncCharacterRotationWithCamera()
+            }
+        }
+        
+        func syncCharacterRotationWithCamera() {
+            guard
+                let arView = arView,
+                let character = character,
+                isJumping == false
+            else { return }
+
+            let cameraTransform = arView.cameraTransform
+            let forward = -cameraTransform.matrix.columns.2.xyz
+
+            let horizontalForward = SIMD3<Float>(forward.x, 0, forward.z)
+            if simd_length(horizontalForward) < 0.001 { return }
+
+            let normalized = simd_normalize(horizontalForward)
+            let yaw = atan2(normalized.x, normalized.z)
+
+            character.transform.rotation =
+                simd_quatf(angle: yaw, axis: [0, 1, 0])
+        }
+        
         @objc
         func handleTap(_ sender: UITapGestureRecognizer) {
             guard let arView = arView else { return }
@@ -150,6 +184,7 @@ struct ARViewContainer: UIViewRepresentable {
             self.character = character
             arView.scene.addAnchor(anchor)
             self.podAnchor = anchor
+            startCameraSync()
         }
 
 
@@ -184,23 +219,25 @@ struct ARViewContainer: UIViewRepresentable {
         }
         
         func jump() {
-            guard let character = character, !isJumping else { return }
-            isJumping = true
+            guard let character = character else { return }
 
-            let jumpHeight: Float = 0.18
-            let groundY = character.transform.translation.y
+            isJumping = true   // ⛔ pause camera sync
 
-            var up = character.transform
-            up.translation.y = groundY + jumpHeight
+            let up: Float = 0.18
 
-            character.move(to: up, relativeTo: character.parent, duration: 0.15)
+            var upTransform = character.transform
+            upTransform.translation.y += up
+            character.move(to: upTransform, relativeTo: character.parent, duration: 0.15)
 
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.33) {
-                guard let character = self.character else { return }
-                var down = character.transform
-                down.translation.y = groundY
-                character.move(to: down, relativeTo: character.parent, duration: 0.18)
-                self.isJumping = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) {
+                var downTransform = character.transform
+                downTransform.translation.y -= up
+                character.move(to: downTransform, relativeTo: character.parent, duration: 0.18)
+
+                // ✅ resume camera sync after landing
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+                    self.isJumping = false
+                }
             }
         }
 
@@ -223,3 +260,8 @@ struct ARViewContainer: UIViewRepresentable {
     ContentView()
 }
 
+extension SIMD4 where Scalar == Float {
+    var xyz: SIMD3<Float> {
+        SIMD3(x, y, z)
+    }
+}
