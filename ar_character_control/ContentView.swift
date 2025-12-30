@@ -13,13 +13,13 @@ import Combine
 final class ControlsProxy: ObservableObject {
     weak var coordinator: ARViewContainer.Coordinator?
 
-    func startUp()    { coordinator?.startMoving { self.coordinator?.moveForward() } }
-    func startDown()  { coordinator?.startMoving { self.coordinator?.moveBackward() } }
-    func startLeft()  { coordinator?.startMoving { self.coordinator?.moveLeft() } }
-    func startRight() { coordinator?.startMoving { self.coordinator?.moveRight() } }
+    
+    func startUp()    { coordinator?.startMoveForward() }
+    func startDown()  { coordinator?.startMoveBackward() }
+    func startLeft()  { coordinator?.startMoveLeft() }
+    func startRight() { coordinator?.startMoveRight() }
 
     func stop()       { coordinator?.stopMoving() }
-
     func jump()       { coordinator?.jump() }
 }
 
@@ -150,6 +150,31 @@ struct ARViewContainer: UIViewRepresentable {
         var character: Entity?
         var isJumping = false
         var cameraUpdateCancellable: Cancellable?
+        var moveDirection = SIMD3<Float>.zero
+        let moveSpeed: Float = 0.5   // meters per second (tune)
+        private var updateCancellable: Cancellable?
+        
+        func startUpdateLoop() {
+            guard let arView = arView else { return }
+
+            updateCancellable = arView.scene.subscribe(
+                to: SceneEvents.Update.self
+            ) { [weak self] event in
+                self?.updateMovement(deltaTime: Float(event.deltaTime))
+            }
+        }
+        func updateMovement(deltaTime: Float) {
+            guard let character = character else { return }
+            guard simd_length(moveDirection) > 0 else { return }
+
+            var transform = character.transform
+
+            // Convert local → world using current rotation
+            let worldDir = transform.rotation.act(moveDirection)
+
+            transform.translation += worldDir * moveSpeed * deltaTime
+            character.transform = transform
+        }
         
         func startCameraSync() {
             guard let arView = arView else { return }
@@ -205,6 +230,7 @@ struct ARViewContainer: UIViewRepresentable {
             arView.scene.addAnchor(anchor)
             self.podAnchor = anchor
             startCameraSync()
+            startUpdateLoop()
         }
 
 
@@ -224,7 +250,12 @@ struct ARViewContainer: UIViewRepresentable {
         func stopMoving() {
             movementTimer?.invalidate()
             movementTimer = nil
+            moveDirection = .zero
         }
+        func startMoveForward()  { moveDirection = [0, 0, 1] }
+        func startMoveBackward() { moveDirection = [0, 0,  -1] }
+        func startMoveLeft()     { moveDirection = [1, 0, 0] }
+        func startMoveRight()    { moveDirection = [-1, 0, 0] }
         
         
         func moveLocal(by offset: SIMD3<Float>, duration: TimeInterval = 0.18) {
