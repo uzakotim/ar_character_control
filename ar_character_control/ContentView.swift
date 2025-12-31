@@ -41,64 +41,82 @@ struct HoldButton: View {
     }
 }
 
+final class MarkerAlignmentState: ObservableObject {
+    @Published var isMarkerVisible = false
+    @Published var isAligned = false
+    @Published var alignmentComplete = false
+
+    // Marker pose quality
+    @Published var screenDistance: CGFloat = .infinity
+    @Published var yawError: Float = .pi
+}
+
 struct ContentView : View {
     @StateObject private var controls = ControlsProxy()
+    @StateObject var alignmentState = MarkerAlignmentState()
 
     var body: some View {
         ZStack {
-            ARViewContainer(controls: controls)
+            ARViewContainer(
+                controls: controls,
+                alignmentState: alignmentState
+            )
                 .edgesIgnoringSafeArea(.all)
-
-            // Overlay controls
-            VStack {
-                Spacer()
-                HStack {
-                    // Bottom-left D-pad
-                    VStack(spacing: 8) {
-                        HStack { Spacer() }
-                        HoldButton(
-                            systemName: "arrow.up.circle.fill",
-                            onPress: { controls.startUp() },
-                            onRelease: { controls.stop() }
-                        )
-
-                        HStack(spacing: 16) {
+            
+            if !alignmentState.alignmentComplete {
+                MarkerAlignmentOverlay(state: alignmentState)
+            } else {
+                // Overlay controls
+                VStack {
+                    Spacer()
+                    HStack {
+                        // Bottom-left D-pad
+                        VStack(spacing: 8) {
+                            HStack { Spacer() }
                             HoldButton(
-                                systemName: "arrow.left.circle.fill",
-                                onPress: { controls.startLeft() },
+                                systemName: "arrow.up.circle.fill",
+                                onPress: { controls.startUp() },
                                 onRelease: { controls.stop() }
                             )
-
-                            HoldButton(
-                                systemName: "arrow.down.circle.fill",
-                                onPress: { controls.startDown() },
-                                onRelease: { controls.stop() }
-                            )
-
-                            HoldButton(
-                                systemName: "arrow.right.circle.fill",
-                                onPress: { controls.startRight() },
-                                onRelease: { controls.stop() }
-                            )
+                            
+                            HStack(spacing: 16) {
+                                HoldButton(
+                                    systemName: "arrow.left.circle.fill",
+                                    onPress: { controls.startLeft() },
+                                    onRelease: { controls.stop() }
+                                )
+                                
+                                HoldButton(
+                                    systemName: "arrow.down.circle.fill",
+                                    onPress: { controls.startDown() },
+                                    onRelease: { controls.stop() }
+                                )
+                                
+                                HoldButton(
+                                    systemName: "arrow.right.circle.fill",
+                                    onPress: { controls.startRight() },
+                                    onRelease: { controls.stop() }
+                                )
+                            }
                         }
+                        .padding(.leading, -500)
+                        .padding(.bottom, 24)
+                        Spacer()
+                        Spacer()
+                        
+                        // Bottom-right Jump button
+                        Button(action: { controls.jump() }) {
+                            Text("Jump")
+                                .font(.headline)
+                                .padding(.horizontal, 20)
+                                .padding(.vertical, 12)
+                                .background(.ultraThinMaterial, in: Capsule())
+                                .foregroundStyle(.white)
+                                .shadow(radius: 2)
+                        }
+                        .padding(.trailing, 20)
+                        .padding(.bottom, 24)
                     }
-                    .padding(.leading, -500)
-                    .padding(.bottom, 24)
-                    Spacer()
-                    Spacer()
-
-                    // Bottom-right Jump button
-                    Button(action: { controls.jump() }) {
-                        Text("Jump")
-                            .font(.headline)
-                            .padding(.horizontal, 20)
-                            .padding(.vertical, 12)
-                            .background(.ultraThinMaterial, in: Capsule())
-                            .foregroundStyle(.white)
-                            .shadow(radius: 2)
-                    }
-                    .padding(.trailing, 20)
-                    .padding(.bottom, 24)
                 }
             }
         }
@@ -107,9 +125,11 @@ struct ContentView : View {
 
 struct ARViewContainer: UIViewRepresentable {
     let controls: ControlsProxy
+    let alignmentState: MarkerAlignmentState
 
     func makeCoordinator() -> Coordinator {
         let c = Coordinator()
+        c.alignmentState = alignmentState
         return c
     }
 
@@ -120,7 +140,28 @@ struct ARViewContainer: UIViewRepresentable {
         let config = ARWorldTrackingConfiguration()
         config.planeDetection = [.horizontal]
         config.environmentTexturing = .automatic
+
+        // 🔑 Image detection (Solution B: load from Assets)
+        guard
+            let uiImage = UIImage(named: "marker"),
+            let cgImage = uiImage.cgImage
+        else {
+            fatalError("❌ marker image not found in Assets")
+        }
+
+        let referenceImage = ARReferenceImage(
+            cgImage,
+            orientation: .up,
+            physicalWidth: 0.043   // ⬅️ MUST match real printed size (meters)
+        )
+
+        config.detectionImages = [referenceImage]
+        config.maximumNumberOfTrackedImages = 1
+
+
         arView.session.run(config)
+        arView.session.delegate = context.coordinator
+
 
         // Optional: show detected planes for debugging
 //         arView.debugOptions.insert(.showAnchorGeometry)
@@ -144,12 +185,16 @@ struct ARViewContainer: UIViewRepresentable {
     
     
 
-    class Coordinator: NSObject {
+    class Coordinator: NSObject, ARSessionDelegate {
         enum ControlState {
             case idle
             case moving
             case jumping
         }
+        weak var alignmentState: MarkerAlignmentState?
+
+        private var worldRoot = Entity()
+        private var alignmentStartTime: TimeInterval?
 
         var controlState: ControlState = .idle
         weak var arView: ARView?
@@ -161,6 +206,78 @@ struct ARViewContainer: UIViewRepresentable {
         let moveSpeed: Float = 0.5   // meters per second (tune)
         private var updateCancellable: Cancellable?
         
+        
+        
+        func session(_ session: ARSession, didUpdate anchors: [ARAnchor]) {
+            guard
+                let arView = arView,
+                let alignmentState = alignmentState,
+                alignmentState.alignmentComplete == false
+            else { return }
+
+            for anchor in anchors {
+                guard let imageAnchor = anchor as? ARImageAnchor else { continue }
+
+                alignmentState.isMarkerVisible = true
+
+                // Project marker into screen space
+                let worldPos = imageAnchor.transform.columns.3.xyz
+                guard let screenPos = arView.project(worldPos)
+                else { return }
+
+                let center = CGPoint(
+                    x: arView.bounds.midX,
+                    y: arView.bounds.midY
+                )
+
+                let distance = hypot(
+                    screenPos.x - center.x,
+                    screenPos.y - center.y
+                )
+
+                alignmentState.screenDistance = distance
+
+                // Yaw-only error
+                let yaw = extractYaw(from: imageAnchor.transform)
+                alignmentState.yawError = abs(yaw)
+
+                let aligned =
+                    distance < 40 &&
+                    alignmentState.yawError < 0.15
+
+                alignmentState.isAligned = aligned
+
+                if aligned {
+                    let now = CACurrentMediaTime()
+                    if alignmentStartTime == nil {
+                        alignmentStartTime = now
+                    } else if now - alignmentStartTime! > 0.5 {
+                        finalizeAlignment(using: imageAnchor)
+                    }
+                } else {
+                    alignmentStartTime = nil
+                }
+            }
+        }
+
+        func extractYaw(from transform: simd_float4x4) -> Float {
+            atan2(transform.columns.0.z, transform.columns.2.z)
+        }
+
+        func finalizeAlignment(using imageAnchor: ARImageAnchor) {
+            guard let arView = arView,
+                  let alignmentState = alignmentState else { return }
+
+            alignmentState.alignmentComplete = true
+
+            let anchorEntity = AnchorEntity(anchor: imageAnchor)
+            arView.scene.addAnchor(anchorEntity)
+
+            // Use marker as world origin
+            worldRoot.position = .zero
+            anchorEntity.addChild(worldRoot)
+        }
+
         func startUpdateLoop() {
             guard let arView = arView else { return }
 
@@ -212,6 +329,7 @@ struct ARViewContainer: UIViewRepresentable {
         
         @objc
         func handleTap(_ sender: UITapGestureRecognizer) {
+            guard alignmentState?.alignmentComplete == true else { return }
             guard let arView = arView else { return }
             if podAnchor != nil { return }
             let location = sender.location(in: arView)
