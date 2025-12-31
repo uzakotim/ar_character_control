@@ -172,8 +172,8 @@ struct ARViewContainer: UIViewRepresentable {
         controls.coordinator = context.coordinator
 
         // Add tap gesture recognizer to place the pod on a detected plane
-        let tapGesture = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTap(_:)))
-        arView.addGestureRecognizer(tapGesture)
+//        let tapGesture = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTap(_:)))
+//        arView.addGestureRecognizer(tapGesture)
 
         return arView
     }
@@ -207,7 +207,59 @@ struct ARViewContainer: UIViewRepresentable {
         private var updateCancellable: Cancellable?
         
         
-        
+        func spawnPod(at parent: Entity) {
+            guard character == nil else { return }
+
+            let pod = PodCharacter.make()
+
+            // Place pod at marker origin
+            pod.position = [0, 0, 0]
+
+            parent.addChild(pod)
+
+            self.character = pod
+
+            startCameraSync()
+            startUpdateLoop()
+        }
+        func spawnPodOnFloor(at worldRoot: Entity) {
+            guard let arView = arView, character == nil else { return }
+
+            let pod = PodCharacter.make()
+
+            // World position of marker origin
+            let markerWorldPos = worldRoot.convert(position: .zero, to: nil)
+
+            // Create a world-space raycast query straight down from the marker
+            let rayOrigin = SIMD3<Float>(
+                markerWorldPos.x,
+                markerWorldPos.y + 0.045,   // small offset above marker
+                markerWorldPos.z
+            )
+            let downDirection = SIMD3<Float>(0, -1, 0)
+            let query = ARRaycastQuery(origin: rayOrigin,
+                                       direction: downDirection,
+                                       allowing: .existingPlaneGeometry,
+                                       alignment: .horizontal)
+            let rayResults = arView.session.raycast(query)
+            if let hit = rayResults.first {
+                let floorY = hit.worldTransform.columns.3.y
+
+                // Convert world Y → local Y
+                let localY = floorY - markerWorldPos.y
+                pod.position = [0, localY, 0]
+            } else {
+                // Fallback: place slightly above marker
+                pod.position = [0, 0.01, 0]
+            }
+
+            worldRoot.addChild(pod)
+            character = pod
+
+            startCameraSync()
+            startUpdateLoop()
+        }
+
         func session(_ session: ARSession, didUpdate anchors: [ARAnchor]) {
             guard
                 let arView = arView,
@@ -270,13 +322,31 @@ struct ARViewContainer: UIViewRepresentable {
 
             alignmentState.alignmentComplete = true
 
-            let anchorEntity = AnchorEntity(anchor: imageAnchor)
-            arView.scene.addAnchor(anchorEntity)
+            // Extract world transform ONCE
+            let markerTransform = Transform(matrix: imageAnchor.transform)
 
-            // Use marker as world origin
+            // Create a persistent world anchor
+            let worldAnchor = AnchorEntity(world: markerTransform.translation)
+            worldAnchor.transform.rotation = markerTransform.rotation
+
+            arView.scene.addAnchor(worldAnchor)
+
+            // Attach world root
             worldRoot.position = .zero
-            anchorEntity.addChild(worldRoot)
+            worldAnchor.addChild(worldRoot)
+
+            // Spawn pod on detected floor
+            spawnPodOnFloor(at: worldRoot)
+
+            // Safe to disable image detection now
+            if let config = arView.session.configuration as? ARWorldTrackingConfiguration {
+                config.detectionImages = []
+                arView.session.run(config)
+            }
         }
+
+
+
 
         func startUpdateLoop() {
             guard let arView = arView else { return }
@@ -476,3 +546,4 @@ extension SIMD4 where Scalar == Float {
         SIMD3(x, y, z)
     }
 }
+
