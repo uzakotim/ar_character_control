@@ -138,7 +138,7 @@ struct ARViewContainer: UIViewRepresentable {
 
         // Configure AR session for horizontal plane detection
         let config = ARWorldTrackingConfiguration()
-        config.planeDetection = [.horizontal]
+        config.planeDetection = [.horizontal, .vertical]
         config.environmentTexturing = .automatic
 
         // 🔑 Image detection (Solution B: load from Assets)
@@ -184,7 +184,7 @@ struct ARViewContainer: UIViewRepresentable {
     
     
     
-
+    
     class Coordinator: NSObject, ARSessionDelegate {
         enum ControlState {
             case idle
@@ -201,6 +201,13 @@ struct ARViewContainer: UIViewRepresentable {
         var podAnchor: AnchorEntity?
         var character: Entity?
         var isJumping = false
+        
+        // Physics + planes
+        private var planeAnchorEntities: [UUID: AnchorEntity] = [:]
+        private var planeModels: [UUID: ModelEntity] = [:]
+        var ball: ModelEntity?
+        var floorModel: ModelEntity?
+        
         var cameraUpdateCancellable: Cancellable?
         var moveDirection = SIMD3<Float>.zero
         let moveSpeed: Float = 0.5   // meters per second (tune)
@@ -212,9 +219,37 @@ struct ARViewContainer: UIViewRepresentable {
 
             let pod = PodCharacter.make()
 
+            guard let podModel = pod.firstModelEntity() else {
+                fatalError("PodCharacter has no ModelEntity")
+            }
+            podModel.generateCollisionShapes(recursive: true)
+
+            let material = PhysicsMaterialResource.generate(
+                friction: 0.8,
+                restitution: 0.6
+            )
+
+            // Ensure the pod can collide with dynamic bodies (like the ball)
+            pod.generateCollisionShapes(recursive: true)
+            let podMaterial = PhysicsMaterialResource.generate(
+                friction: 0.8,
+                restitution: 0.6
+            )
+
+            pod.components[PhysicsBodyComponent.self] = PhysicsBodyComponent(
+                massProperties: PhysicsMassProperties(mass: 5.0),
+                material: podMaterial,
+                mode: .kinematic
+            )
+
+            pod.components[PhysicsMotionComponent.self] =
+                PhysicsMotionComponent(linearVelocity: .zero, angularVelocity: .zero)
+
             // Place pod at marker origin
             pod.position = [0, 0, 0]
-
+            
+           
+            
             parent.addChild(pod)
 
             self.character = pod
@@ -226,6 +261,26 @@ struct ARViewContainer: UIViewRepresentable {
             guard let arView = arView, character == nil else { return }
 
             let pod = PodCharacter.make()
+
+            guard let podModel = pod.firstModelEntity() else {
+                fatalError("PodCharacter has no ModelEntity")
+            }
+           
+            podModel.generateCollisionShapes(recursive: true)
+
+            let material = PhysicsMaterialResource.generate(
+                friction: 0.8,
+                restitution: 0.6
+            )
+
+            podModel.components[PhysicsBodyComponent.self] = PhysicsBodyComponent(
+                massProperties: PhysicsMassProperties(mass: 5.0),
+                material: material,
+                mode: .kinematic
+            )
+
+            podModel.components[PhysicsMotionComponent.self] =
+                PhysicsMotionComponent(linearVelocity: .zero, angularVelocity: .zero)
 
             // World position of marker origin
             let markerWorldPos = worldRoot.convert(position: .zero, to: nil)
@@ -254,61 +309,141 @@ struct ARViewContainer: UIViewRepresentable {
             }
 
             worldRoot.addChild(pod)
+            pod.components[PhysicsMotionComponent.self] =
+                PhysicsMotionComponent(linearVelocity: .zero, angularVelocity: .zero)
             character = pod
 
             startCameraSync()
             startUpdateLoop()
         }
+        func spawnSoccerBall(near reference: Entity, in parent: Entity) {
+            // Avoid duplicating the ball
+            if ball != nil { return }
+
+            let radius: Float = 0.025
+            let sphere = MeshResource.generateSphere(radius: radius)
+            let material = SimpleMaterial(color: .red, roughness: 0.3, isMetallic: false)
+            let ballEntity = ModelEntity(mesh: sphere, materials: [material])
+
+            // Collisions + dynamic physics
+            ballEntity.generateCollisionShapes(recursive: false)
+
+            // Use a higher restitution so it bounces more noticeably
+            let physMaterial = PhysicsMaterialResource.generate(
+                friction: 0.5,
+                restitution: 0.95
+            )
+            let massProps = PhysicsMassProperties(
+                shape: .generateSphere(radius: radius),
+                mass: 0.25
+            )
+            ballEntity.components[PhysicsBodyComponent.self] = PhysicsBodyComponent(
+                massProperties: massProps,
+                material: physMaterial,
+                mode: .dynamic
+            )
+
+            // Reduce damping so the ball doesn't lose all energy immediately
+            if var body = ballEntity.components[PhysicsBodyComponent.self] as? PhysicsBodyComponent {
+                body.linearDamping = 0.05
+                body.angularDamping = 0.05
+                ballEntity.components[PhysicsBodyComponent.self] = body
+            }
+
+            // Place in front of the reference entity (pod), slightly higher so it can drop and bounce
+            let forwardDir = simd_normalize(reference.transform.rotation.act(SIMD3<Float>(0, 0, 1)))
+            let spawnOffset: SIMD3<Float> = forwardDir * 0.25 + SIMD3<Float>(0, radius * 3.0, 0)
+            ballEntity.position = reference.position + spawnOffset
+
+            // 🔧 ADD motion component explicitly (CRITICAL)
+            ballEntity.components[PhysicsMotionComponent.self] =
+                PhysicsMotionComponent(linearVelocity: .zero, angularVelocity: .zero)
+
+            // Give it a gentle initial kick and some spin
+            var motion = ballEntity.components[PhysicsMotionComponent.self]!
+            motion.linearVelocity = forwardDir * 0.6 + SIMD3<Float>(0, 0.2, 0)
+            motion.angularVelocity = SIMD3<Float>(0, 6, 0)
+            ballEntity.components[PhysicsMotionComponent.self] = motion
+
+
+            parent.addChild(ballEntity)
+            self.ball = ballEntity
+        }
+        
+        func addStaticFloor(under reference: Entity, in parent: Entity) {
+            if floorModel != nil { return }
+            let size = SIMD3<Float>(2.0, 0.01, 2.0)
+            let mesh = MeshResource.generateBox(size: size)
+            let material = OcclusionMaterial()
+            let floor = ModelEntity(mesh: mesh, materials: [material])
+            floor.position = SIMD3<Float>(reference.position.x, reference.position.y - size.y * 0.5, reference.position.z)
+            floor.generateCollisionShapes(recursive: false)
+            let physMat = PhysicsMaterialResource.generate(friction: 0.9, restitution: 0.8)
+            floor.components[PhysicsBodyComponent.self] = PhysicsBodyComponent(massProperties: .default, material: physMat, mode: .static)
+            parent.addChild(floor)
+            self.floorModel = floor
+        }
 
         func session(_ session: ARSession, didUpdate anchors: [ARAnchor]) {
-            guard
-                let arView = arView,
-                let alignmentState = alignmentState,
-                alignmentState.alignmentComplete == false
-            else { return }
+            // Handle image anchor alignment until alignment completes
+            if let arView = arView, let alignmentState = alignmentState, alignmentState.alignmentComplete == false {
+                for anchor in anchors {
+                    guard let imageAnchor = anchor as? ARImageAnchor else { continue }
 
-            for anchor in anchors {
-                guard let imageAnchor = anchor as? ARImageAnchor else { continue }
+                    alignmentState.isMarkerVisible = true
 
-                alignmentState.isMarkerVisible = true
+                    // Project marker into screen space
+                    let worldPos = imageAnchor.transform.columns.3.xyz
+                    guard let screenPos = arView.project(worldPos) else { continue }
 
-                // Project marker into screen space
-                let worldPos = imageAnchor.transform.columns.3.xyz
-                guard let screenPos = arView.project(worldPos)
-                else { return }
+                    let center = CGPoint(x: arView.bounds.midX, y: arView.bounds.midY)
+                    let distance = hypot(screenPos.x - center.x, screenPos.y - center.y)
+                    alignmentState.screenDistance = distance
 
-                let center = CGPoint(
-                    x: arView.bounds.midX,
-                    y: arView.bounds.midY
-                )
+                    // Yaw-only error
+                    let yaw = extractYaw(from: imageAnchor.transform)
+                    alignmentState.yawError = abs(yaw)
 
-                let distance = hypot(
-                    screenPos.x - center.x,
-                    screenPos.y - center.y
-                )
+                    let aligned = distance < 40 && alignmentState.yawError < 0.15
+                    alignmentState.isAligned = aligned
 
-                alignmentState.screenDistance = distance
-
-                // Yaw-only error
-                let yaw = extractYaw(from: imageAnchor.transform)
-                alignmentState.yawError = abs(yaw)
-
-                let aligned =
-                    distance < 40 &&
-                    alignmentState.yawError < 0.15
-
-                alignmentState.isAligned = aligned
-
-                if aligned {
-                    let now = CACurrentMediaTime()
-                    if alignmentStartTime == nil {
-                        alignmentStartTime = now
-                    } else if now - alignmentStartTime! > 0.5 {
-                        finalizeAlignment(using: imageAnchor)
+                    if aligned {
+                        let now = CACurrentMediaTime()
+                        if alignmentStartTime == nil {
+                            alignmentStartTime = now
+                        } else if now - alignmentStartTime! > 0.5 {
+                            finalizeAlignment(using: imageAnchor)
+                        }
+                    } else {
+                        alignmentStartTime = nil
                     }
-                } else {
-                    alignmentStartTime = nil
                 }
+            }
+
+            // Always update colliders for any detected planes (horizontal + vertical)
+            for a in anchors {
+                if let plane = a as? ARPlaneAnchor {
+                    addOrUpdatePlaneCollider(for: plane)
+                }
+            }
+        }
+        func session(_ session: ARSession, didAdd anchors: [ARAnchor]) {
+            for a in anchors {
+                guard let plane = a as? ARPlaneAnchor else { continue }
+                addOrUpdatePlaneCollider(for: plane)
+            }
+        }
+
+        func session(_ session: ARSession, didRemove anchors: [ARAnchor]) {
+            guard let arView = arView else { return }
+            for a in anchors {
+                guard let plane = a as? ARPlaneAnchor else { continue }
+                let id = plane.identifier
+                if let anchorEnt = planeAnchorEntities[id] {
+                    arView.scene.removeAnchor(anchorEnt)
+                }
+                planeAnchorEntities.removeValue(forKey: id)
+                planeModels.removeValue(forKey: id)
             }
         }
 
@@ -337,6 +472,11 @@ struct ARViewContainer: UIViewRepresentable {
 
             // Spawn pod on detected floor
             spawnPodOnFloor(at: worldRoot)
+            if let pod = self.character {
+                print("Added static floor and soccer ball near the pod")
+                self.addStaticFloor(under: pod, in: self.worldRoot)
+                self.spawnSoccerBall(near: pod, in: self.worldRoot)
+            }
 
             // Safe to disable image detection now
             if let config = arView.session.configuration as? ARWorldTrackingConfiguration {
@@ -346,7 +486,60 @@ struct ARViewContainer: UIViewRepresentable {
         }
 
 
+        private func addOrUpdatePlaneCollider(for plane: ARPlaneAnchor) {
+            guard let arView = arView else { return }
+            let id = plane.identifier
 
+            let thickness: Float = 0.002
+
+            // Compute size depending on plane alignment
+            let size: SIMD3<Float>
+            switch plane.alignment {
+            case .horizontal:
+                let width = max(plane.extent.x, 0.05)
+                let length = max(plane.extent.z, 0.05)
+                size = SIMD3<Float>(width, thickness, length)
+            case .vertical:
+                let width = max(plane.extent.x, 0.05)
+                let height = max(plane.extent.y, 0.05)
+                size = SIMD3<Float>(width, height, thickness)
+            @unknown default:
+                let width = max(plane.extent.x, 0.05)
+                let length = max(plane.extent.z, 0.05)
+                size = SIMD3<Float>(width, thickness, length)
+            }
+
+            let mesh = MeshResource.generateBox(size: size)
+            let material = OcclusionMaterial()
+
+            if let model = planeModels[id], let anchorEnt = planeAnchorEntities[id] {
+                // Update existing
+                model.model = ModelComponent(mesh: mesh, materials: [material])
+                model.position = SIMD3<Float>(plane.center.x, plane.center.y, plane.center.z)
+                if model.components[PhysicsBodyComponent.self] == nil {
+                    model.generateCollisionShapes(recursive: false)
+                    let physMat = PhysicsMaterialResource.generate(friction: 0.9, restitution: 0.9)
+                    model.components[PhysicsBodyComponent.self] = PhysicsBodyComponent(massProperties: .default, material: physMat, mode: .static)
+                }
+                if anchorEnt.scene == nil {
+                    arView.scene.addAnchor(anchorEnt)
+                }
+            } else {
+                // Create new anchor + model
+                let anchorEnt = AnchorEntity(anchor: plane)
+                let model = ModelEntity(mesh: mesh, materials: [material])
+                model.position = SIMD3<Float>(plane.center.x, plane.center.y, plane.center.z)
+                model.generateCollisionShapes(recursive: false)
+                let physMat = PhysicsMaterialResource.generate(friction: 0.9, restitution: 0.9)
+                model.components[PhysicsBodyComponent.self] = PhysicsBodyComponent(massProperties: .default, material: physMat, mode: .static)
+
+                anchorEnt.addChild(model)
+                arView.scene.addAnchor(anchorEnt)
+
+                planeAnchorEntities[id] = anchorEnt
+                planeModels[id] = model
+            }
+        }
 
         func startUpdateLoop() {
             guard let arView = arView else { return }
@@ -358,14 +551,20 @@ struct ARViewContainer: UIViewRepresentable {
             }
         }
         func updateMovement(deltaTime: Float) {
-            guard controlState == .moving else { return }
-            guard let character = character else { return }
 
-            var transform = character.transform
-            let worldDir = transform.rotation.act(moveDirection)
-            transform.translation += worldDir * moveSpeed * deltaTime
-            character.transform = transform
+            guard let model = character?.firstModelEntity(),
+                  var motion = model.components[PhysicsMotionComponent.self]
+            else { return }
+
+            let worldDir = character!.transform.rotation.act(moveDirection)
+
+            motion.linearVelocity.x = worldDir.x * moveSpeed
+            motion.linearVelocity.z = worldDir.z * moveSpeed
+
+            model.components[PhysicsMotionComponent.self] = motion
+
         }
+
         
         func startCameraSync() {
             guard let arView = arView else { return }
@@ -442,9 +641,11 @@ struct ARViewContainer: UIViewRepresentable {
 
         func stopMoving() {
             moveDirection = .zero
-            if controlState == .moving {
-                controlState = .idle
+            if var motion = character?.components[PhysicsMotionComponent.self] {
+                motion.linearVelocity = .zero
+                character?.components[PhysicsMotionComponent.self] = motion
             }
+            controlState = .idle
         }
         func startMoveForward() {
             guard controlState != .jumping else { return }
@@ -470,57 +671,58 @@ struct ARViewContainer: UIViewRepresentable {
             moveDirection = [-1, 0, 0]
         }
         
-        func moveLocal(by offset: SIMD3<Float>, duration: TimeInterval = 0.18) {
-            guard let character = character else { return }
-            var t = character.transform
-            // Convert local-space offset to world-space using current rotation
-            let worldOffset = t.rotation.act(offset)
-            t.translation += worldOffset
-            character.move(to: t, relativeTo: character.parent, duration: duration)
-        }
-
-        func moveForward() {
-            moveLocal(by: [0, 0, -baseStep], duration: moveDuration)
-        }
-
-        func moveBackward() {
-            moveLocal(by: [0, 0, baseStep], duration: moveDuration)
-        }
-
-        func moveLeft() {
-            moveLocal(by: [-baseStep, 0, 0], duration: moveDuration)
-        }
-
-        func moveRight() {
-            moveLocal(by: [baseStep, 0, 0], duration: moveDuration)
-        }
+//        func moveLocal(by offset: SIMD3<Float>, duration: TimeInterval = 0.18) {
+//            guard let character = character else { return }
+//            var t = character.transform
+//            // Convert local-space offset to world-space using current rotation
+//            let worldOffset = t.rotation.act(offset)
+//            t.translation += worldOffset
+//            character.move(to: t, relativeTo: character.parent, duration: duration)
+//        }
+//
+//        func moveForward() {
+//            moveLocal(by: [0, 0, -baseStep], duration: moveDuration)
+//        }
+//
+//        func moveBackward() {
+//            moveLocal(by: [0, 0, baseStep], duration: moveDuration)
+//        }
+//
+//        func moveLeft() {
+//            moveLocal(by: [-baseStep, 0, 0], duration: moveDuration)
+//        }
+//
+//        func moveRight() {
+//            moveLocal(by: [baseStep, 0, 0], duration: moveDuration)
+//        }
         
         func jump() {
-            guard let character = character else { return }
-            guard controlState != .jumping else { return }
+            guard let model = character?.firstModelEntity(),
+                  var motion = model.components[PhysicsMotionComponent.self]
+            else { return }
 
-            // ⛔ stop movement immediately
-            moveDirection = .zero
             controlState = .jumping
             isJumping = true
 
-            let up: Float = 0.18
+            // upward impulse
+            motion.linearVelocity.y = 1.8
+            model.components[PhysicsMotionComponent.self] = motion
 
-            var upTransform = character.transform
-            upTransform.translation.y += up
-            character.move(to: upTransform, relativeTo: character.parent, duration: 0.15)
+            // gravity-like fall
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                guard var motion = model.components[PhysicsMotionComponent.self] else { return }
+                motion.linearVelocity.y = -1.8
+                model.components[PhysicsMotionComponent.self] = motion
 
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.22) {
-                var downTransform = character.transform
-                downTransform.translation.y -= up
-                character.move(to: downTransform, relativeTo: character.parent, duration: 0.18)
-
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                    motion.linearVelocity.y = 0
+                    model.components[PhysicsMotionComponent.self] = motion
                     self.isJumping = false
-                    self.controlState = .idle   // ✅ unlock controls
+                    self.controlState = .idle
                 }
             }
         }
+
 
 
         func turnLeft() {
@@ -544,6 +746,20 @@ struct ARViewContainer: UIViewRepresentable {
 extension SIMD4 where Scalar == Float {
     var xyz: SIMD3<Float> {
         SIMD3(x, y, z)
+    }
+}
+
+extension Entity {
+    func firstModelEntity() -> ModelEntity? {
+        if let model = self as? ModelEntity {
+            return model
+        }
+        for child in children {
+            if let found = child.firstModelEntity() {
+                return found
+            }
+        }
+        return nil
     }
 }
 

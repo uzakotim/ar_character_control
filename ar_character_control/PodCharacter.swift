@@ -61,6 +61,15 @@ enum PodCharacter {
         root.addChild(leftFoot)
         root.addChild(rightFoot)
 
+        // Enable collisions and kinematic physics so dynamic bodies (like the ball) can bounce off the pod.
+        root.generateCollisionShapes(recursive: true)
+        let podPhysicsMaterial = PhysicsMaterialResource.generate(friction: 0.8, restitution: 0.3)
+        root.components[PhysicsBodyComponent.self] = PhysicsBodyComponent(
+            massProperties: .default,
+            material: podPhysicsMaterial,
+            mode: .kinematic
+        )
+
         return root
     }
 }
