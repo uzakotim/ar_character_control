@@ -7,39 +7,22 @@ import RealityKit
 import UIKit
 
 enum PodCharacter {
-
     static func make() -> ModelEntity {
 
-        // MARK: - Dimensions
-        let height: Float = 0.14
+        // Materials
+        let bodyMaterial = SimpleMaterial(color: .init(red: 0.2, green: 0.6, blue: 0.95, alpha: 1.0), roughness: 0.3, isMetallic: true)
+
+        // Approximate a capsule using a cylinder + two half-spheres
+        let totalHeight: Float = 0.14
         let radius: Float = 0.035
+        let sphereRadius: Float = radius
+        let cylinderHeight: Float = totalHeight - (2.0 * sphereRadius)
 
-        // MARK: - Mesh
-        let mesh = MeshResource.generateCylinder(
-            height: height,
-            radius: radius
-        )
+        // Cylinder body
+        let cylinderMesh = MeshResource.generateCylinder(height: cylinderHeight, radius: radius)
+        let pod = ModelEntity(mesh: cylinderMesh, materials: [bodyMaterial])
+        pod.position = [0.0,(cylinderHeight / 2.0), 0.0]
 
-        // MARK: - Material (blue)
-        let material = SimpleMaterial(
-            color: UIColor(
-                red: 0.2,
-                green: 0.6,
-                blue: 0.95,
-                alpha: 1.0
-            ),
-            roughness: 0.3,
-            isMetallic: true
-        )
-
-        // MARK: - ModelEntity (SINGLE BODY)
-        let pod = ModelEntity(
-            mesh: mesh,
-            materials: [material]
-        )
-
-        // Move pivot so bottom sits on the floor
-        pod.position.y = height / 2
 
         // MARK: - Collision
         pod.generateCollisionShapes(recursive: false)
@@ -66,6 +49,7 @@ enum PodCharacter {
                 linearVelocity: .zero,
                 angularVelocity: .zero
             )
+
 
         return pod
     }
